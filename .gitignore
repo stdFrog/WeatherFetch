@@ -11,4 +11,5 @@
 *.h
 !README.txt
 !main.cpp
-
+!libcurl.txt
+!libxml2.txt
