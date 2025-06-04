@@ -1,0 +1,546 @@
+libcurl은 웹 스크래핑에 자주 활용되는 라이브러리 중 하나이다.
+HTTPS를 지원한다는 점에서 아주 유용한데 윈도우 환경이라면 사실 WinInet 라이브러리를 사용하는게 더 편하다.
+
+보안이 크게 중요하지 않다면 소켓 프로그래밍을 통해 HTTP로 직접 서버에 요청해도 된다.
+물론, SSL/TLS 프로토콜을 추가하면 HTTPS도 지원할 수 있다.
+
+libcurl과 libxml2, cJSON 등은 웹 스크래핑에 있어 거의 한 몸이다시피 사용된다.
+이 중에서 가장 난이도가 낮은게 cJSON이며 MIB 라이센스까지 갖고 있는 아주 잘 만들어진 라이브러리이다.
+잘 만들어진 라이브러리라 코드 몇 줄, 함수 몇 가지만 슥 훑어보면 어렵지 않게 사용할 수 있다.
+웹 스크래핑에 있어 대중화된 라이브러리 구성이므로 한 번 배워두면 평생 쓸 수 있을 것이다.
+
+여기서 웹 스크래핑이란, 간단히 말해 네트워크 통신으로 서버에 원하는 정보를 요청하고 이 데이터 정보를 받아온 후 가공하는 것을 말한다.
+서버에 요청하여 반환받은 데이터 정보는 크게 HTML, JSON, xml 형식이 있다.
+
+이번 프로젝트에서는 기상청에서 날씨 정보를 가져오는 것이기 때문에 몇 가지 준비해야 될 것이 있다.
+기상청은 2025년 3월 중순까지 공개된 RSS(Really Simple Syndication) 형식의 데이터를 제공했었는데 현재는 API 기반으로 변경되었다.
+
+여러가지 이유가 있겠지만, 데이터 품질 개선이 주요 원인이며 이로인해 사용자 인증 키가 필요해졌다.
+공공 데이터 서비스는 대부분 오픈 API이며 회원가입 후 인증키를 발급받으면 자유롭게 데이터를 사용할 수 있다.
+RSS를 지원하는 사이트가 몇 군데 남아 있긴 하지만 보안 위협으로 인해 현재는 API 키를 활용하는게 대중화되어 있다.
+
+서론이 길어졌는데 libcurl에 대해 배워보자. libcurl은 HTTPS 연결을 지원한다.
+소켓과 똑같이 초기화 구문이 필요하며 시작/종료, 할당/해제 등의 대응되는 함수들이 존재한다.
+
+우선, 초기화 구문을 먼저 보자.
+libcurl을 사용하려면 먼저 핸들러를 초기화해야 한다.
+
+> CURL *curl = curl_easy_init();
+
+여기서 핸들러란, libcurl이 네트워크 통신을 위해 관리하는 객체이며 HTTP 요청을 구성하고 실행하는 역할을 한다.
+이 객체는 메모리 내에서 HTTP 요청의 옵션을 저장하고, 실제로 요청을 수행하는 역할을 한다.
+원형은 다음과 같다.
+
+typedef struct Curl_easy {
+	struct connectdata *conn;		// 현재 연결(소켓) 정보
+	struct Curl_slist *headers;		// HTTP 요청 헤더 리스트
+	char *url;						// 요청할 웹 페이지 URL
+	long timeout;					// 요청 제한 시간 설정 (초 단위)
+	CURLcode result;				// 요청 수행 결과 코드
+	void *private_data;				// 사용자 정의 데이터 저장 공간
+} CURL;
+
+여기서 핵심 멤버가 서버와의 연결 정보를 저장하는 struct connectdata 구조체이다.
+내부적으로 TCP 소켓과 SSL/TLS 세션 등을 관리하는데 원형이 다음과 같다.
+
+typedef struct connectdata {
+	int sockfd;							// 연결된 소켓 디스크립터
+	struct sockaddr_in server_addr;		// 서버 주소 정보 (IPv4)
+	int ssl_enabled;					// SSL/TLS 사용 여부 (1: 사용, 0: 비사용)
+	struct Curl_easy *data;				// 연결된 요청 핸들러 (CURL 구조체 포인터)
+	long timeout;						//연결 타임아웃 설정 (초 단위)
+} connectdata;
+
+- sockfd:			현재 연결된 소켓의 디스크립터 (네트워크 통신용)
+- server_addr:		서버의 IP 주소와 포트 정보 저장 (IPv4 기준)
+- ssl_enabled:		SSL/TLS 활성화 여부 (HTTPS 사용 시 1)
+- data:				연결된 CURL 핸들러 객체 (요청을 처리하는 구조체)
+- timeout:			연결 제한 시간 (지정된 시간 내 연결되지 않으면 종료)
+
+구조를 보면 알겠지만 소켓 통신을 한다.
+여기에 SSL/TLS 프로토콜을 추가하여 HTTPS 통신이 가능해진 것이다.
+
+다음은 struct Curl_slist 구조체를 보자.
+이 구조체는 HTTP 요청 헤더를 저장하는 연결 리스트이며 CURLOPT_HTTPHEADER 옵션을 사용할 때 활용된다.
+
+typedef struct Curl_slist {
+	char *data;					// 저장된 헤더 문자열 (예: "User-Agent: curl/7.79.1")
+	struct Curl_slist *next;	// 다음 헤더 요소를 가리키는 포인터 (연결 리스트)
+} Curl_slist;
+
+- data: HTTP 헤더 값 (예: User-Agent: curl/7.79.1)
+- next: 다음 Curl_slist 구조체를 가리키는 포인터 (연결 리스트 방식)
+
+HTTP 헤더는 따로 설명하지 않기로 한다.
+SLL, 즉 싱글 링크드 리스트 구조를 가지는데 사실상 헤더를 수백개 수천개 사용하는 경우는 없다고 보면 되므로 구조 자체로 인해 발생하는 속도 지연은 없다고 할 수 있다.
+헤더를 추가할 때는 curl_slist_append 함수를 사용하고 제거할 때는 curl_slist_free_all 함수를 사용한다.
+각각의 원형은 다음과 같다.
+
+> struct Curl_slist *curl_slist_append(struct Curl_slist *list, const char *string);
+> void curl_slist_free_all(struct Curl_slist *list);
+
+curl_slist_append의 인수를 차례대로 살펴보자.
+- list:			헤더 리스트의 기존 포인터 (NULL이면 새로운 리스트 생성)
+- string:		추가할 헤더 문자열 (예: "User-Agent: curl/7.79.1" 등)
+- 리턴값 :		새로 추가된 헤더 리스트의 포인터를 반환, 실패시 NULL
+
+간단한 사용 예시를 보이면 다음과 같다.
+
+{
+	struct Curl_slist *headers = NULL;
+	headers = curl_slist_append(headers, "User-Agent: curl/7.79.1");
+	headers = curl_slist_append(headers, "Accept: application/json");
+}
+
+이렇게 설정한 HTTP 헤더 리스트를 curl_easy_setopt 함수로 설정까지 마쳐야 HTTP 요청을 보낼 때 헤더가 적용된다.
+
+{
+	struct Curl_slist *headers = NULL;
+	headers = curl_slist_append(headers, "User-Agent: curl/7.79.1");
+	headers = curl_slist_append(headers, "Accept: application/json");
+
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+}
+
+브라우저 대신 curl을 실행하는 사용자 에이전트가 "User-Agent: curl/7.79.1"로 설정되고,
+서버에서 JSON 형식 데이터를 받을 수 있도록 "Aceept:application/json" 헤더를 포함했다.
+이렇게 헤더를 작성한 후 설정 함수를 호출해야 웹 서버에 요청을 보낼 때 지정한 헤더가 포함된다.
+
+다음은 curl_slist_free_all 함수의 인수를 보자.
+딱 하나 뿐인데 정리할 헤더 리스트의 포인터를 전달하면 된다.
+실제 예시를 보이면 다음과 같다.
+
+{
+	curl_slist_free_all(headers);
+}
+
+요청이 끝나면 리스트를 제거해서 불필요한 리소스 사용을 방지하고 프로그램을 종료하기 전에 메모리 누수가 발생하지 않도록 반드시 호출되어야 한다.
+헤더 리스트를 직접 해제하겠다고 시도해보는 아둔한 사람은 없겠지만 혹시 모르니 강조한다.
+헤더 리스트를 해제할 때는 반드시 curl_slist_free_all 함수로 정리해야 한다.
+
+다음은 CURLcode에 대해 알아보자.
+libcurl 함수의 실행 결과를 나타내는 열거형(enum) 상수인데 각 값은 요청에 대한 성공/실패 등에 대한 통지이다.
+원형을 보자.
+
+typedef enum {
+	CURLE_OK = 0,					// 요청 성공
+	CURLE_UNSUPPORTED_PROTOCOL,		// 지원되지 않는 프로토콜
+	CURLE_FAILED_INIT,				// 초기화 실패
+	CURLE_COULDNT_CONNECT,			// 서버 연결 실패
+	CURLE_HTTP_RETURNED_ERROR,		// HTTP 서버 오류 (예: 500 Internal Server Error)
+	CURLE_READ_ERROR,				// 응답 데이터 읽기 실패
+	CURLE_OPERATION_TIMEDOUT		// 요청 시간 초과
+} CURLcode;
+
+- CURLE_OK:							요청이 정상적으로 처리됨
+- CURLE_UNSUPPORTED_PROTOCOL:		지원되지 않는 프로토콜 사용 (예: ftp 대신 sftp 등)
+- CURLE_FAILED_INIT:				curl_easy_init() 초기화 실패
+- CURLE_COULDNT_CONNECT:			서버와 연결할 수 없음 (네트워크 문제 등)
+- CURLE_HTTP_RETURNED_ERROR:		HTTP 서버 오류 발생 (예: 500, 403 등)
+- CURLE_OPERATION_TIMEDOUT:			설정된 제한 시간 내 응답을 받지 못함
+
+C언어 전통 구문과 관습이 그대로 묻어있다.
+더 많은 기능이 추가된 C++이나 C#에서도 사실 이런 열거 타입을 많이 사용하고 있는데 서비스와 이벤트 뷰어를 다뤄본 사람들은 잘 알고있을 것이다.
+각각에 대한 설명은 주석으로 추가해뒀으며 외의 자세한 설명은 필요할 때 직접 레퍼런스를 찾아보기로 하자.
+
+여기까지 Curl_easy 구조체의 멤버들을 분석해봤는데 간단히 요약하면 다음과 같다.
+
+- struct connectdata:	TCP/SSL 연결 정보 관리
+- struct Curl_slist:	HTTP 헤더를 연결 리스트로 저장
+- CURLcode:				libcurl 요청 실행 결과를 나타내는 오류 코드
+
+다음은 구조체 초기화 후 호출해야 할 설정 함수에 대해 알아보자.
+앞에서 살짝 언급했는데 원형은 다음과 같다.
+
+> CURLcode curl_easy_setopt(CURL *handle, CURLoption option, parameter);
+
+이 함수는 CURL 핸들러에 다양한 옵션을 설정하는 역할을 한다.
+각 인수의 의미는 다음과 같다.
+
+- handle:		초기화된 CURL 핸들러 (요청을 수행할 객체)
+- option:		설정할 CURL 옵션 (예: CURLOPT_URL, CURLOPT_TIMEOUT, CURLOPT_WRITEFUNCTION 등)
+- parameter:	설정할 옵션 값 (예: URL 문자열, 시간 값, 콜백 함수 주소 등)
+
+우선, 첫 번째 인수인 handle은 설명할 것도 없이 초기화한 CURL 핸들러의 포인터를 전달하면 된다.
+두 번째 인수인 option에 꽤 많은 값이 존재하는데 간단한 예시를 먼저 살펴보고 option 값들을 정리해보자.
+
+{
+	CURL *curl = curl_easy_init();
+
+	// URL 설정
+	curl_easy_setopt(curl, CURLOPT_URL, "https://example.com");
+
+	// 제한 시간 설정: 10초
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+	// 요청에 대한 응답으로 반환된 데이터를 처리할 방법(콜백 함수) 등록
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+}
+
+설명이 필요없을 정도로 아주 짧은 코드다. 곧바로 옵션 종류에 대해 알아보자.
+여기서는 웹 스크래핑에 필수적인 옵션만 알아본다.
+
+1. CURLOPT_URL:									요청할 웹 페이지 주소 설정
+2. CURLOPT_FOLLOWLOCATION:						리디렉션 자동 따라가기
+3. CURLOPT_WRITEFUNCTION:						응답 데이터를 처리할 콜백 함수 등록
+4. CURLOPT_USERAGENT:							사용자 에이전트 설정 (브라우저 흉내내기)
+5. CURLOPT_TIMEOUT:								최대 실행 시간 설정
+6. CURLOPT_COOKIEJAR / CURLOPT_COOKIEFILE:		쿠키 저장 및 사용
+7. CURLOPT_HTTPHEADER:							HTTP 요청 헤더 설정
+8. CURLOPT_PROXY:								프록시 사용
+
+이제 각각의 예시를 보자.
+
+{	
+	// 1. CURLOPT_URL
+	curl_easy_setopt(curl, CURLOPT_URL, "https://example.com");
+
+	/* HTTP 요청을 보낼 대상 URL을 설정한다. */
+	/* 반드시 설정해야 하며 요청을 어디로 보낼지 결정하는 동작이다. */
+}
+
+{
+	// 2. CURLOPT_FOLLOWLOCATION
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+	/* 페이지가 기존 URL과 달라져 다른 URL로 이동했을 때 자동으로 이동한다(리디렉션). */
+	/* 변경된 URL을 자동으로 추적하여 원래 요청한 사이트의 정보를 가져온다. */
+
+	리디렉션에 대한 반응은 클라이언트가 처리하지 않으면 자동으로 처리되지 않는다.
+	클라이언트가 요청한 URL이 유효하지 않고 변경된 경우 서버가 이에 대한 응답을 보내는데,
+	이 응답이 "HTTP/1.1 301 Moved Permanently"와 같은 형태라면 리디렉션(301, 302)이 필요하다는 뜻이며
+	헤더의 "Location"에 새로운 URL을 제공한다(Location: https://new-url.com).
+
+	이 옵션을 켜두면 이를 알아서 해석하여 리디렉션 한다.
+	만약, 리디렉션을 수동으로 처리하려면 CURLOPT_FOLLOWLOCATION을 0L로 설정한 후, 응답에서 "Location" 헤더를 추출해 직접 재요청하면 된다.
+}
+
+{
+	// 3. CURLOPT_WRITEFUNCTION
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+
+	/* 서버에서 받은 데이터를 콜백 함수를 통해 읽어들일 때마다 사용자가 정한 방식으로 처리할 수 있다. */
+	/* 웹 페이지 데이터를 직접 다루려면 필수라고 볼 수 있는데 더 간단한 방법도 존재한다. */
+	/* HTML을 분석하고 파일로 저장하는 작업을 할 때 자주 사용된다. */
+	
+	/* 콜백 함수의 원형은 다음과 같다. */
+	size_t write_callback(
+		void *ptr,			// 수신된 데이터 버퍼 (응답 데이터가 여기에 저장됨)
+		size_t size,		// 기본 블록 크기 (일반적으로 1)
+		size_t nmemb,		// 수신된 데이터 개수 (size * nmemb가 총 데이터 크기)
+		void *userdata		// 사용자 정의 데이터 (사용자가 설정한 context 정보)
+	);  
+
+	/* ptr 포인터는 서버에서 받은 HTTP 응답 데이터를 가리킨다. */
+	/* 이 데이터를 파일에 저장하거나 문자열로 변환하여 저장할 수 있다. */
+	/* size * nmemb로 데이터 크기를 계산하는데 한 블록의 크기(size)와 블록 개수(nmemb)를 곱해 데이터 전체 크기를 구할 수 있다. */
+	/* size * nmemb만큼 데이터를 처리해야 한다는 뜻인데 서버에서 데이터를 스트리밍 방식으로 전달하므로 */
+	/* 전송 가능한 작은 청크(블록)에 대해 매번 동일한 처리가 이뤄진다고 생각하면 된다. */
+	/* 참고로 curl_easy_perform은 서버가 응답한 데이터를 모두 받기 전에는 반환되지 않는다. */
+
+	/* 사용자 정의 데이터(userdata)를 활용하여 가공한 데이터를 저장할 수 있는데 일반적으로 FILE 포인터 타입을 전달하여 파일에 직접 저장한다. */
+	/* 또는 동적으로 할당된 구조체를 사용해 데이터를 저장하는 방식도 가능하다. */
+	/* 반환값이 size * nmemb와 다르면 오류로 처리되며 반환값이 size * nmemb보다 작으면 curl에서 오류로 간주하여 요청을 중단할 수 있다. */
+	/* 따라서 데이터를 정상적으로 처리했을 때에는 반드시 size * nmemb를 반환해야 한다. */
+
+	/* 메모리에 저장하고 싶다면 다음과 같이 구조체를 만들어 데이터를 저장해두면 된다. */
+	struct Memory{
+		char *mem;
+		size_t size;
+	}
+
+	size_t WriteCallback(void *ptr, size_t size, size_t nmemb/*NumberOfMember*/, void *userdata) {
+		struct MemoryStruct *mem = (struct MemoryStruct *)userdata; // 사용자 정의 데이터 (구조체)
+
+		size_t total_size = size * nmemb; // 전달된 데이터 크기
+		char *temp = realloc(mem->memory, mem->size + total_size + 1); // 기존 데이터 + 새로운 데이터 공간 할당
+
+		if (!temp) {
+			fprintf(stderr, "메모리 할당 실패!\n");
+			return 0; // 오류 발생 시 0 반환
+		}
+
+		mem->memory = temp; // 메모리 주소 업데이트
+		memcpy(&(mem->memory[mem->size]), ptr, total_size); // 새로운 데이터 추가
+		mem->size += total_size; // 총 크기 업데이트
+		mem->memory[mem->size] = '\0'; // 문자열 끝 표시
+
+		return total_size; // 처리된 데이터 크기 반환
+	}
+
+	int main()
+	{
+		struct MemoryStruct mem;
+		mem.memory = malloc(1); // realloc 가능하려면 일단 1바이트 크기라도 할당해야 한다.
+		mem.size = 0;
+
+		...
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&mem);
+	}
+}
+
+{
+	// 4. CURLOPT_USERAGENT
+	curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+
+	/* HTTP 요청을 보낼 때 클라이언트의 정체(사용자 에이전트)를 서버에 전달한다. */
+	/* 즉, curl이 웹 브라우저를 흉내내는 것인데 일부 사이트에서는 브라우저가 아닌 요청을 차단하기도 하므로 이런 옵션이 필요하다 */
+	/* 만약, 서버에서 클라이언트의 본체를 웹 브라우저로 제한한 경우 실제 브라우저처럼 요청을 보내야 하므로 반드시 설정해야 한다 */
+}
+
+{
+	// 5. CURLOPT_TIMEOUT
+	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+	/* 지정된 시간 내 응답이 없으면 요청을 중단한다. */
+	/* 무한 대기를 방지하는 것인데 소켓 프로그래밍에서도 자주 사용되므로 추가적인 설명은 하지 않기로 한다. */
+	/* 데이터 구조가 복잡할 경우 서버 응답이 느릴 수 있는데, 크롤링이 멈추지 않도록 하기 위해 사용한다고 보면 쉽다. */
+}
+
+{
+	// 6. CURLOPT_COOKIEJAR / CURLOPT_COOKIEFILE
+	curl_easy_setopt(curl, CURLOPT_COOKIEJAR, "cookies.txt");
+	curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "cookies.txt");
+
+	/* 해당 세션의 쿠키를 저장하고 저장한 쿠키를 이용하여 로그인 상태를 유지한다. */
+	/* 로그인이 필요한 웹사이트에서 세션을 유지할 때 필수라고 보면 된다. */
+	/* CURLOPT_COOKIEJAR 옵션이 쿠키를 파일에 저장하는 것이며, CURLOPT_COOKIEFILE이 저장된 파일을 로드하여 쿠키 정보를 포함한 후 서버에 요청을 보내는 것이다. */
+	/* 로그인 했을 떄의 정보와 아닐 때의 정보가 다른 경우 특히 중요하며 이처럼 세션 유지가 필요한 경우 반드시 설정해야 한다. */
+}
+
+{
+	// 7. CURLOPT_HTTPHEADER
+	struct Curl_slist *headers = NULL;
+	headers = curl_slist_append(headers, "Accept: application/json");
+	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+	/* HTTP 요청 헤더를 추가하는 동작이며 앞에서 이미 다뤄본 바 있다. */
+	/* API 요청 및 특정 데이터를 가져오려면 반드시 설정해야 한다. */
+	/* 웹 API에서 JSON 데이터를 요청할 때 필수적으로 설정한다. */
+}
+
+{
+	// 8. CURLOPT_PROXY
+	curl_easy_setopt(curl, CURLOPT_PROXY, "http://proxy.example.com:8080");
+
+	/* 프록시 서버를 통해 통신을 요청한다. 본인이 사용하는 프록시 서버가 있으면 설정하면 된다. */
+	/* 일반 사용자는 VPN을 많이 쓰는데 리눅스 개발자, 특히 서버 개발자는 프록시 서버에 익숙할 것이다. */
+	/* 파이썬으로도 프록시 서버를 구현할 수 있는데 여기서는 개인 프로그램이므로 굳이 설정하지 않는다. */
+	/* 프록시 서버는 클라이언트와 인터넷 서버간의 요청을 중계하는 역할을 하며 공공 웹사이트에서 클라이언트의 요청이 차단될 가능성이 있을 때 사용된다. */
+	/* 즉, 직접 서버와 통신을 하는 것이 아니라 중간 중계기를 두고 서로간의 IP 주소는 알지 못한체 통신을 수행한다. */
+	/* 익명성 유지와 웹 필터링, 보안 강화 및 우회 접속, 캐싱을 위해 프록시 서버가 사용되므로 필요한 경우 설정하면 된다. */
+	/* 세 번째 인수에 사용할 프록시 서버를 전달하면 되는데 서버의 주소를 문자열로 전달하면 된다. */
+	/* 일반적으로 프록시 서버는 보안 관리자, 서버 관리자가 있는 기업에서 활용되는 경우가 많으므로 도메인을 가지는게 일반적이다. */
+	/* 개인이 운영하는 프록시 서버라면 공인 IP를 직접 사용해도 되는데 사실상 의미가 없다. 기업이나 데이터 센터, 클라우드 환경에서나 고정 공인 IP를 가진 프록시 서버를 운영할 수 있다. */
+}
+
+여기까지 내용을 다시 정리해보자.
+웹 스크래핑에서 가장 중요한 옵션은 크게 8가지가 있다.
+
+1. CURLOPT_URL:									웹 페이지 주소 설정 (필수)
+2. CURLOPT_FOLLOWLOCATION:						리디렉션 자동 이동 (필수)
+3. CURLOPT_WRITEFUNCTION:						응답 데이터 처리 (필수)
+4. CURLOPT_USERAGENT:							브라우저처럼 보이게 설정 (필수)
+5. CURLOPT_TIMEOUT:								응답 제한 시간 설정 (추천)
+6. CURLOPT_COOKIEJAR / CURLOPT_COOKIEFILE:		쿠키 저장 및 사용 (로그인 필요 시 필수)
+7. CURLOPT_HTTPHEADER:							API 또는 특정 요청 헤더 설정 (추천)
+8. CURLOPT_PROXY:								프록시 설정 (익명성 필요 시 사용)
+
+추가로 2개만 더 알아두자.
+디버깅을 위한 로그를 출력하는 옵션도 있는데 CURLOPT_VERBOSE 옵션을 설정하면 된다.
+네트워크 요청이 제대로 진행되고 있는지 확인할 때 유용하다.
+
+{
+	// 기본값은 0(비활성), 활성하려면 1로 설정한다.
+	curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
+}
+
+libcurl의 내부 동작을 상세하게 출력해주는데 네트워크 요청이 어떻게 진행되는지 알고 싶으면 이 옵션을 설정하면 된다.
+네트워크 연결 과정(DNS 조회 결과, 서버 연결 과정 등)과 HTTP 요청 및 응답 데이터 정보, 에러 메시지 및 상세 정보 등을 볼 수 있다.
+
+또, CURLOPT_WRITEDATA 옵션도 있는데 이 옵션은 CURLOPT_WRITEFUNCTION과 함께 설정되어야만 한다.
+출력을 리디렉션할 때 적용하면 되는데 메모리 버퍼나 파일에 저장하고 싶다면 이 옵션을 추가해야 한다.
+CURLOPT_WRITEFUNCTION은 표준 출력으로 데이터를 처리하여 콘솔 화면에 데이터를 출력하는데 반해,
+CURLOPT_WRITEDATA 옵션을 설정하면 파일이나 메모리 버퍼 등으로 받아온 데이터의 출력 방향을 설정할 수 있다.
+즉, 데이터를 파일이나 메모리에 저장할 수 있다는 얘기다.
+
+메모리 버퍼에 저장하는 예시를 보자.
+
+{
+	FILE *fp = fopen("weather.json", "wb");
+	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+}
+
+한 번에 큰 메모리를 할당하고 저장하는 동작을 하고 싶다면 이 옵션을 주면 된다.
+
+외에도 다양한 옵션이 많은데 적어도 수십개는 넘어가기 때문에 전부 설명할 수는 없다.
+웹은 그만큼 복잡한 동작을 요구하므로 필요할 때 레퍼런스를 참고해서 찾아보기로 하자.
+
+다음은 curl_easy_perform 함수에 대해 알아보자.
+이 함수는 담당하고 있는 것이 굉장히 많다.
+
+{
+	CURLcode curl_easy_perform(CURL *handle); // CURL 핸들 (요청을 실행할 CURL 객체)
+}
+
+우선, CURLcode 타입을 리턴하는데 함수의 실행 성공 여부나 오류 코드를 반환한다고 생각하면 된다.
+이 함수는 서버가 보낸 응답 데이터를 작은 블록 단위로 처리하는 경우(콜백 함수 이용) 모든 응답 데이터를 받은 다음에서야 리턴한다.
+즉, 콜백 함수가 호출될 때마다 반환되는 것이 아니라 서버가 보낸 모든 응답 데이터를 받아 콜백 함수에 전달한 후에야 반환한다.
+인수로는 요청을 실행할 CURL 핸들을 전달한다.
+
+이 함수는 내부적으로 굉장히 다양한 처리를 하는데 핵심 함수이므로 자세히 분석해볼 필요가 있다.
+1. 네트워크 초기화
+2. DNS 조회 및 서버 연결
+3. HTTP 요청 헤더 및 본문 구성
+4. 서버에 데이터 전송
+5. 응답 데이터 수신 및 처리
+6. HTTP 상태 코드 분석 및 에러 처리
+7. 리소스 정리
+
+1번 부터 차례대로 살펴보자.
+리눅스나 유닉스는 네트워크 통신에 특화된 운영체제로 네트워크와 관련된 여러 유틸리티를 제공하고 있다.
+반면, 윈도우즈 환경에서는 이런 유틸리티가 상대적으로 적기 때문에 Winsock2를 이용해서 네트워크 기능을 초기화 한다.
+즉, 내부적으로 WSAStartup 함수를 호출하여 소켓 시스템을 초기화 한다.
+
+DNS를 조회하고 서버에 대한 연결을 수행하는 동작 역시 Winsock2를 사용하는데,
+일반적인 소켓 통신과 동일하다. getaddrinfo 함수로 호스트명을 IP 주소로 변환하고 socket과 connect로 TCP 연결을 맺는다.
+HTTPS 요청에 대해서는 Schannel(보안 연결) 라이브러리를 사용하는데 TLS/SSL 연결이 필요한 경우 알아서 추가한다.
+
+정리하면, getaddrinfo 함수를 호출하여 DNS 조회를 수행하고 IP를 얻어온 후, 서버와 TCP 연결을 맺기 위해 socket, connect함수를 호출하고 HTTPS 요청에 대해서 Schannel 라이브러리를 사용해 TLS/SSL 연결을 설정한다.
+
+Schannel 라이브러리를 이용해서 TLS 연결을 수행하는 예시 코드가 github에 상세히 나와있다.
+배워야할 게 상당히 많기 때문에 여기서 다루진 않기로 하고 참고할 수 있는 github 링크를 남긴다.
+
+> https://gist.github.com/odzhan/1b5836c4c8b02d4d9cb9ec574432432c
+
+다시 돌아와서 HTTP 요청 헤더와 본문을 구성하는 동작에 대해서 알아보자.
+길게 설명할 것 없이 사용자가 CURLOPT_HTTPHEADER, CURLOPT_POSTFIELDS 등의 옵션을 설정했을 때
+이를 기반으로 HTTP 요청을 구성하고 적절한 형식으로 가공하여 전송할 준비를 마친다.
+
+이후 서버에 데이터를 전송하는데 Winsock2 라이브러리의 send 함수를 이용해서 데이터를 전송한다.
+HTTP 요청에 대해선 위와 같이 동작하고 HTTPS 연결의 경우 Schannel을 이용해 암호화된 데이터 전송을 수행한다.
+
+데이터 전송 이후 서버가 응답하기를 기다리는데 응답 데이터의 수신과 이에 대한 처리도 알아서 한다.
+Winsock2의 recv 함수를 사용해서 서버 응답을 기다리고 반환 받은 데이터를 사용자가 설정한 옵션에 맞게 처리하는데
+CURLOPT_WRITEFUNCTION 옵션이 지정되어 있다면 응답 데이터를 사용자 정의 함수(콜백 함수)로 전달하여 처리한다.
+
+기본적으로 CURLOPT_WRITEFUNCTION을 이용해 데이터를 가공하는데 이 옵션을 주지 않으면
+curl_easy_perform 함수가 데이터를 출력하는 동작까지 수행한다. 즉, 받아온 데이터를 콘솔에 출력한다.
+일반적이지 않아 앞에서 설명하지 않았는데 일단은 가능하다. 아래 예시를 보자.
+
+{
+	#include <stdio.h>
+	#include <curl/curl.h>
+
+	int main() {
+		CURL *curl;
+		CURLcode res;
+
+		curl = curl_easy_init();
+		if (curl) {
+			curl_easy_setopt(curl, CURLOPT_URL, "https://example.com");
+
+			res = curl_easy_perform(curl);
+			if (res != CURLE_OK) {
+				fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+			}
+
+			curl_easy_cleanup(curl);
+		}
+		return 0;
+	}
+}
+
+CURLOPT_WRITEFUNCTION 옵션이 설정되지 않으면 libcurl은 내부적으로 디폴트 값을 사용하는데
+이 디폴트 값이 write_data 함수를 호출하여 표준 출력(stdout)으로 응답 데이터 결과를 출력하는 동작이다.
+write_data는 내부 함수이므로 직접 사용하는 것은 불가능하다.
+
+마지막으로 HTTP 상태 코드를 분석하고 에러 처리하는 동작을 살펴보자.
+libcurl이 내부적으로 HTTP 상태 코드를 처리하는 기능을 지원하는데 서버 응답에서 200 OK, 404 Not Founc 따위의 HTTP 상태 코드를 분석한다.
+에러가 발생했을 때 curl_easy_strerror 함수를 호출하여 오류 메시지를 확인할 수 있는데 실패한 함수의 유형을 직접 인수로 전달해야 해서 좀 번거롭다.
+필요한 경우 윈도우즈 이벤트 로그 시스템을 통해 오류를 기록하는 것도 가능한데 고급 기능이므로 필요할 때 추가하는 것으로 하자.
+
+리눅스에서는 cURL이 보통 OpenSSL을 사용하는데 윈도우에서는 Schannel을 기본적으로 활용한다.
+관련 토픽이 MSDN에 잘 나와있으므로(번역 필요) 영어를 잘 한다면 읽어보기 바란다.
+
+리소스 정리 동작은 curl_easy_cleanup 함수가 수행하는데 libcurl 핸들을 해제하고 네트워크 연결을 종료한다.
+열린 소켓을 닫고 사용한 리소스를 반환하는 동작도 포함되어 있으며 메모리를 해제하고 내부적으로 할당한 구조체와 데이터를 정리하기도 한다.
+멀티 핸들인 CURLM 구조체를 사용할 때도 똑같이 호출해야 하는데 이 구조체는 숨겨진 타입(hidden type)이므로 내부 구조를 알 수는 없다.
+사용 방법도 간단한데 예시 코드를 보자.
+
+{
+	#include <stdio.h>
+	#include <curl/curl.h>
+
+	int main() {
+		CURL *curl1, *curl2;
+		CURLM *multi_handle;
+		int still_running;
+
+		// 멀티 핸들 생성
+		multi_handle = curl_multi_init();
+
+		// 첫 번째 요청
+		curl1 = curl_easy_init();
+		curl_easy_setopt(curl1, CURLOPT_URL, "https://example.com");
+
+		// 두 번째 요청
+		curl2 = curl_easy_init();
+		curl_easy_setopt(curl2, CURLOPT_URL, "https://example.org");
+
+		// 멀티 핸들에 요청 추가
+		curl_multi_add_handle(multi_handle, curl1);
+		curl_multi_add_handle(multi_handle, curl2);
+
+		// 요청 실행
+		do {
+			curl_multi_perform(multi_handle, &still_running);
+		} while (still_running);
+
+		// 리소스 정리
+		curl_multi_remove_handle(multi_handle, curl1);
+		curl_multi_remove_handle(multi_handle, curl2);
+		curl_easy_cleanup(curl1);
+		curl_easy_cleanup(curl2);
+		curl_multi_cleanup(multi_handle);
+
+		return 0;
+	}
+}
+
+그냥 배열을 떠올리면 쉽다.
+여기까지 HTTP 요청을 보내기 위해 필요한 동작을 다시 한 번 정리해보자.
+
+1. 핸들러 초기화(curl_easy_init):				요청을 실행할 객체 생성
+2. URL 설정(curl_easy_setopt):					요청할 서버 주소 입력
+3. 응답 처리 함수 설정(CURLOPT_WRITEFUNCTION):	받은 데이터를 처리할 콜백 함수 연결
+4. HTTP 요청 실행(curl_easy_perform):			설정된 요청을 실제 실행
+5. 메모리 정리(curl_easy_cleanup):				핸들러를 제거하여 리소스 해제
+
+큰 틀은 여기서 벗어나지 않는다.
+라이브러리 사용에 있어 필요한 전반적인 부분을 모두 다뤘으므로 실습에는 큰 문제가 없을 것이다.
+
+추가로, 에러 처리 함수를 앞에서 언급만 했는데 curl_easy_strerror 함수의 원형과 에러 코드를 살펴보고 끝내자.
+원형은 다음과 같다.
+
+{
+	const char *curl_easy_strerror(CURLcode errornum); // 발생한 CURL 에러 코드
+}
+
+반환값이 인수로 전달한 에러 코드에 대한 문자열 설명인데 인수로 직접 에러 코드를 전달해야 해서 약간 번거롭다.
+사용하는 것 자체는 그리 어렵지 않으므로 CURLcode나 쭉 살펴보자.
+무려 100개나 되므로 전부 살펴볼 수는 없고 자주 사용되는 오류 코드 목록만 보자.
+
+- CURLE_OK (0):						모든 것이 정상적으로 작동함
+- CURLE_UNSUPPORTED_PROTOCOL (1):	지원되지 않는 프로토콜 사용
+- CURLE_FAILED_INIT (2):			초기화 실패
+- CURLE_URL_MALFORMAT (3):			URL 형식 오류
+- CURLE_COULDNT_RESOLVE_PROXY (5):	프록시 주소를 찾을 수 없음
+- CURLE_COULDNT_RESOLVE_HOST (6):	호스트 주소를 찾을 수 없음
+- CURLE_COULDNT_CONNECT (7):		서버 또는 프록시에 연결 실패
+- CURLE_REMOTE_ACCESS_DENIED (9):	접근 권한 없음
+- CURLE_OPERATION_TIMEDOUT (28):	요청 시간이 초과됨
+- CURLE_SSL_CONNECT_ERROR (35):		SSL/TLS 연결 오류
+- CURLE_HTTP_RETURNED_ERROR (22):	HTTP 응답 코드 오류
+- CURLE_TOO_MANY_REDIRECTS (47):	너무 많은 리디렉션 발생

@@ -1,0 +1,456 @@
+libxml2 라이브러리를 연구해보자.
+보편적으로 다음의 순서를 따라 라이브러리를 사용하게 된다.
+1. 초기화 함수
+2. xml 파일 읽기
+3. 루트 노드 가져오기
+4. 특정 노드 탐색
+5. 노드 값 가져오기
+6. xml 문서 정리
+
+1번부터 차례대로 살펴보자.
+초기화 함수 xmlInitPareser의 원형은 다음과 같다.
+
+> void xmlInitParser(void);
+
+이 함수는 libxml2가 내부적으로 사용하는 메모리 및 캐시 구조를 초기화한다.
+xmlInitParser 함수를 반드시 호출해야 하는 경우는 멀티스레드 환경일 때인데, 싱글스레드 환경에서는 굳이 호출하지 않아도 된다.
+xmlReadFile, xmlDocGetRootElement 함수 등 일부 함수를 호출할 때 자동으로 초기화 한다.
+
+멀티스레드 환경에서는 libxml2의 명시적이 초기화가 필요하므로 안전하게 싱글스레드 환경에서도 초기화 함수를 호출하는 구문을 추가해두는 것이 좋다.
+정확한 메모리 관리를 위해 초기화 함수를 호출하는 것을 권장하며 종료할 때는 xmlCleanupParser 함수로 뒷정리를 해야 한다.
+
+이번엔 xml 파일을 읽어오는 함수를 보자.
+
+> xmlDocPtr xmlReadFile(const char *filename, // 읽을 XML 파일 경로
+						const char *encoding, // 사용할 문자 인코딩 (NULL일 경우 자동 감지)
+						int options);         // 파싱 옵션 (0 또는 특정 옵션 사용)
+
+xmlDocPtr 타입을 반환하는데 이 구조체 타입은 아래에서 설명하기로 한다.
+함수가 실패하고 파일을 제대로 읽어오지 못했을 때는 NULL을 반환하며 이를 이용해 오류 체크를 하면 된다.
+
+첫 번째 인수는 xml 파일의 경로를 지정하는 문자열이며 두 번째 인수는 인코딩 지정인데 대부분 NULL이다.
+NULL을 지정하면 자동으로 감지하며 특정한 인코딩으로 강제할 때는 "UTF-8", "ISO-8859-1"과 같이 값을 설정한다.
+세 번째 인수는 파싱 옵션인데 0을 지정하면 기본 설정을 사용하며 XML_PARSE_RECOVER, XML_PARSE_NOERROR, XML_PARSE_NOWARNING 등의 옵션을 많이 사용한다.
+
+함수가 성공하면 다음과 같은 구조체 타입을 반환하는데 원형은 다음과 같다.
+
+{
+	typedef struct _xmlDoc *xmlDocPtr;
+
+	struct _xmlDoc {
+		void *_private;            // 내부 데이터 (사용자 정의 데이터 가능)
+		xmlElementType type;       // 문서 타입 (XML_DOCUMENT_NODE 등)
+		char *name;                // 문서 이름
+		struct _xmlNode *children; // 루트 노드 (XML 데이터의 시작점)
+		struct _xmlNode *last;     // 마지막 노드
+		struct _xmlDoc *parent;    // 부모 문서 (NULL일 수도 있음)
+		struct _xmlDoc *next;      // 다음 문서 (연결 리스트 구조)
+		struct _xmlDoc *prev;      // 이전 문서
+		xmlDict *dict;             // XML 내부에서 사용하는 문자열 사전(Dictionary)
+		int compression;           // 압축 수준
+		int standalone;            // 독립 문서 여부 (YES/NO)
+	};
+}
+
+- _private:		내부에서 사용되는 데이터 (사용자 정의 가능)
+- type:			문서 타입 (XML_DOCUMENT_NODE)
+- name:			문서 이름 (NULL일 수도 있음)
+- children:		루트 노드 (xmlNode 구조체를 가리킴)
+- dict:			XML 문자열 사전 (메모리 최적화 기능)
+
+XML 데이터를 다룰 때 xmlDoc->children와 같이 직접 접근할 수 있으며 이를 통해 루트 노드를 탐색하는 것이 가능하다.
+xmlElemnType은 열거형인데 특정 노드가 태그인지, 텍스트인지, 속성인지 등을 구분하는 역할을 한다.
+xmlNode->type으로 접근할 수 있으며 다음과 같은 원형을 가진다.
+
+{
+	typedef enum {
+		XML_ELEMENT_NODE,     // XML 태그 (예: <item>, <category>)
+		XML_ATTRIBUTE_NODE,   // 속성 (예: <tag attr="value">)
+		XML_TEXT_NODE,        // 텍스트 노드 (예: <category>T1H</category> → "T1H")
+		XML_CDATA_SECTION_NODE, // CDATA 섹션 (예: <![CDATA[...]]>)
+		XML_COMMENT_NODE,     // 주석 (예: <!-- 댓글 -->)
+		XML_DOCUMENT_NODE,    // 문서 노드 (XML 문서 자체)
+		XML_DTD_NODE,         // DTD 정의 노드
+		XML_PI_NODE,          // 처리 지시어 (예: <?xml version="1.0"?>)
+	} xmlElementType;
+}
+
+어려울 게 없으니 넘어가고, xmlDict에 대해서도 알아보자.
+문자열 사전이라고 설명했는데 XML 데이터를 처리할 때 문자열을 관리하는 구조체라고 보면 된다.
+여러 문자열을 저장하고 검색할 때 메모리 사용을 최적화하여 중복을 방지하고 더 빠르게 파싱/검색이 가능하게끔 한다.
+
+구조체 타입인데 원형은 다음과 같다.
+{
+	struct _xmlDict {
+		struct _xmlDictEntry *dict; // 내부적으로 저장되는 문자열 데이터
+		size_t size;                // 사전 크기
+		int ref_counter;            // 참조 횟수 (메모리 최적화)
+	};
+	typedef struct _xmlDict xmlDict;
+}
+
+XML 문서의 노드 이름과 속성값 같은 문자열을 관리하며 이를 공유하여 메모리 사용을 줄이고 성능을 최적화한다.
+xmlDicCreate, xmlDictFree 함수를 이용해 생성 및 해제 할 수 있다.
+
+멤버 변수로 xmlDictEntry 구조체 타입을 가지는데 이것도 마저 보자.
+
+{
+	struct _xmlDictEntry {
+		struct _xmlDictEntry *next; // 다음 엔트리 (해시 충돌이 발생할 경우 연결 리스트 구조)
+		const xmlChar *name;        // 저장된 문자열 (중복 방지)
+		unsigned long key;          // 해시 키 값 (문자열의 빠른 검색을 위해 사용)
+		int len;                    // 문자열 길이
+	};
+	typedef struct _xmlDictEntry xmlDictEntry;
+}
+
+- next:	다음 엔트리 (같은 해시 값을 가진 문자열이 있을 경우 연결)
+- name:	실제 저장된 문자열 (예: "temperature", "humidity")
+- key:	문자열의 해시 값 (빠른 검색을 위해 활용)
+- len:	문자열의 길이 (메모리 최적화를 위해 사용)
+
+해시 값을 이용해 빠른 검색이 가능하게끔 하는데 앞서 얘기했듯 문자열을 효율적으로 저장하기 위한 구조를 갖고 있다.
+해시 충돌이 발생할 경우에는 next 필드를 이용해 연결 리스트로 관리하며 문자열을 저장하고 검색하는 역할을 한다.
+
+만약 파일이 아닌 메모리에 xml파일을 읽어왔다면 다음 함수를 사용한다.
+{
+	xmlDocPtr xmlReadMemory(
+		const char *buffer,		// XML 데이터가 저장된 메모리 버퍼
+		int size,				// XML 데이터의 크기 (바이트 단위)
+		const char *URL,		// XML 문서의 가상 URL (NULL 가능)
+		const char *encoding,	// 문자 인코딩 (NULL 가능)
+		int options				// XML 파싱 옵션
+	);
+}
+
+xmlDocPtr 타입을 리턴하는데 함수가 성공했을 때만 정상적으로 반환된다.
+첫 번째 인수에는 XML 데이터가 저장된 메모리 버퍼를 전달하고 두 번째 인수에는 XML 데이터의 크기를 전달하는데 단위는 바이트이다.
+가상 메모리 공간이나 메모리 이미지에 데이터를 저장해둔 경우에는 세 번째 인수를 전달하는데 XML 문서가 있는 경로를 전달하면 된다. 문서 크기가 큰 경우에는 활용되지만 흔한 경우는 아니다.
+네 번째 인수로는 XML 데이터의 문자 인코딩을 지정하는데 NULL이면 알아서 탐지하며 강제할 때만 지정하면 된다.
+다섯 번째 인수는 파싱 옵션인데 XML_PARSE_NOERROR나 XML_PARSE_NOBLANKS 등의 옵션을 지정할 수 있다.
+이것도 자주 쓰이진 않으므로 그냥 넘어가기로 하자. 필요할 때 레퍼런스를 참고하기 바란다.
+
+이번엔 개별 노드를 탐색할 때 사용하는 xmlNodePtr 타입을 보자.
+{
+	typedef struct _xmlNode *xmlNodePtr;
+
+	struct _xmlNode {
+		void *_private;           // 내부 데이터 (사용자 정의 가능)
+		xmlElementType type;      // 노드 타입 (XML_ELEMENT_NODE, XML_TEXT_NODE 등)
+		const xmlChar *name;      // 노드 이름 (예: "item", "category" 등)
+		struct _xmlNode *children; // 하위 노드 (첫 번째 자식 노드)
+		struct _xmlNode *last;    // 마지막 하위 노드
+		struct _xmlNode *parent;  // 부모 노드
+		struct _xmlNode *next;    // 같은 레벨의 다음 노드
+		struct _xmlNode *prev;    // 같은 레벨의 이전 노드
+		struct _xmlDoc *doc;      // XML 문서 객체 (xmlDocPtr)
+		xmlNsPtr ns;              // 네임스페이스 정보
+		xmlChar *content;         // 노드 내용 (예: `<category>T1H</category>` → "T1H")
+	};
+}
+
+- _private:		내부 데이터 (사용자 정의 가능)
+- type:			노드 타입 (XML_ELEMENT_NODE, XML_TEXT_NODE 등)
+- name:			노드 이름 ("category", "item" 등)
+- children:		첫 번째 하위 노드 (NULL이면 하위 노드 없음)
+- next, prev:	같은 레벨의 다음/이전 노드
+- content:		노드의 내용 (xmlNodeGetContent(node)로 값 가져오기)
+
+xmlNodePtr을 통해 노드 이동 및 탐색이 가능하며(children, next, prev), 노드 값(content)을 가져올 때는 xmlNodeGetContent() 함수를 사용한다.
+끝에 있는 2개의 멤버 변수만 아직 살펴보지 않았는데 이에 대해서 알아보자.
+
+xmlNSPtr은 xmlNS 구조체 타입의 포인터를 사용자 정의 타입으로 정의해둔 것인데 그 원형은 다음과 같다.
+{
+	struct _xmlNs {
+		struct _xmlNs *next;      // 다음 네임스페이스 (연결 리스트 구조)
+		xmlNsType type;           // 네임스페이스 타입 (예: XML_NAMESPACE_DECL)
+		const xmlChar *href;      // 네임스페이스 URI (예: "https://weather.example.com")
+		const xmlChar *prefix;    // 네임스페이스 접두사 (예: "weather")
+		struct _xmlDoc *context;  // 네임스페이스가 속한 XML 문서 객체
+	};
+	typedef struct _xmlNs xmlNs;
+	typedef struct _xmlNs *xmlNsPtr;
+}
+
+- next:		다음 네임스페이스 (XML 문서에서 여러 개의 네임스페이스를 가질 경우 연결)
+- type:		네임스페이스의 타입 (XML_NAMESPACE_DECL 등)
+- href:		네임스페이스 URI ("https://weather.example.com")
+- prefix:	네임스페이스 접두사 ("weather")
+- context:	네임스페이스가 속한 XML 문서 (xmlDocPtr)
+
+XML 문서에서 태그 이름의 충돌을 방지하고, 특정 네임스페이스를 지정하는 구조체이다.
+즉, 네임스페이스를 관리하는 역할을 하며 접두사와 URI(href)를 포함한다.
+네임스페이스가 여러 개일 경우 next를 이용해 연결 리스트 구조로 저장된다.
+
+네임스페이스의 간단한 예시를 보이면 다음과 같다.
+{
+	<root xmlns:weather="https://weather.example.com">
+	    <weather:forecast>Sunny</weather:forecast>
+	</root>
+}
+
+<weather:forecast> 노드는 weather 네임스페이스에 속해 있는데 xmlNode->ns로 이 노드의 네임스페이스 정보를 가져올 수 있다.
+외에도 URI(href), 접두사(prefix), 연결 리스트(next) 등의 정보를 얻기 위해 필요한 구조체 타입이며 더 정교한 탐색에 사용된다고 이해하면 된다.
+
+여기까지 xmlReadFile 함수에서 사용하는 구조체 타입과 열거형 타입, 포인터 타입에 대해 알아봤다.
+이번엔 xmlDocGetRootElement 함수에 대해 알아보자. 원형은 다음과 같다.
+
+{
+	xmlNodePtr xmlDocGetRootElement(xmlDocPtr doc); // XML 문서 객체 (루트 노드를 가져올 대상)
+}
+
+함수가 성공하면 반환값은 앞에서 배운 xmlNodePtr 타입이다.
+만약 문서가 비어있거나 루트 노드가 없으면 NULL이 반환된다.
+인수는 루트 노드를 가져올 XML 문서 객체를 넘기면 된다.
+
+이 함수는 내부적으로 XML 문서의 루트 노드를 찾는데 doc->children 필드를 확인하여 최상위 노드(root element)를 가져온다.
+정상적으로 루트 노드를 반환한 경우 node->children 식으로 하위 노드를 탐색할 수 있다.
+만약, 루트 노드가 없다면 NULL을 반환하도록 되어 있다.
+
+즉, xmlDocGetRootElement 함수는 이름 그대로 XML 문서에서 최상위 요소를 가져오는 동작을 한다.
+
+다음으로 xmlNodeGetContent 함수에 대해 알아보자.
+이 함수는 XML 데이터에서 개별 노드의 값을 가져오는 동작을 한다.
+
+노드 내부의 문자열을 읽어서 반환하는데 텍스트 값을 가져온다고 보면 된다.
+예를 들어, <category>T1H</category> 구문에서 노드 <category>를 제외한 내부 문자열 "T1H"를 읽어서 반환한다.
+원형은 다음과 같다.
+
+{
+	xmlChar *xmlNodeGetContent(xmlNodePtr node); // XML 노드 객체 (텍스트 값을 가져올 대상)
+}
+
+xmlChar 포인터 타입을 반환하는데 이 타입은 char 타입의 사용자 정의 타입이다.
+노드의 텍스트 값을 저장하는 타입이며 다국어 및 유니코드(UTF-8) 호환을 위해 설계된 타입이다.
+char와 유사하나 안정적으로 문자열을 다룰 수 있도록 최적화한 타입이라고 보면 된다.
+
+인수로 텍스트 값을 가져올 XML 노드 객체를 전달하면 되는데 노드가 비어있거나 텍스트 노드가 아닌 경우에는 NULL이 반환된다.
+이 함수는 내부적으로 XML 노드의 콘텐츠를 확인하는데 node->content 필드를 확인하여 노드가 텍스트 값을 포함하는지 체크한 후 만약 그렇다면 이 값을 반환한다.
+이때 node->type 필드를 확인하는데 태그가 XML_TEXT_NODE나 XML_CDATA_SECTION_NODE 타입일 경우에만 값을 반환한다.
+태그가 일치해도 텍스트가 비어있으면 NULL을 반환한다.
+내부적으로 문자열을 복사하는 동작을 하므로 반드시 xmlFree 함수를 호출하여 할당한 메모리를 해제해야만 한다.
+
+참고로, XML 속성 값을 저장하는 구조체 타입도 존재한다.
+원형은 다음과 같다.
+
+{
+	struct _xmlAttr {
+		struct _xmlNode *parent;   // 속성이 속한 부모 노드
+		struct _xmlAttr *next;     // 다음 속성 (연결 리스트 구조)
+		struct _xmlAttr *prev;     // 이전 속성
+		struct _xmlNode *children; // 속성 값이 저장된 노드 (텍스트 값)
+		struct _xmlDoc *doc;       // 속성이 속한 문서 객체
+		xmlNsPtr ns;               // 네임스페이스 정보 (NULL일 수도 있음)
+		xmlChar *name;             // 속성 이름 (예: "id", "class")
+	};
+	typedef struct _xmlAttr xmlAttr;
+	typedef struct _xmlAttr *xmlAttrPtr;
+}
+
+- parent → 속성이 속한 부모 태그 (xmlNode 객체)
+- name → 속성 이름 (id, class, href 등)
+- children → 속성 값 (xmlNode 형태로 저장됨)
+- ns → 속성이 속한 네임스페이스 (xmlNsPtr)
+- next, prev → 같은 태그의 다음 속성 / 이전 속성 (연결 리스트 구조)
+
+구조체를 구성하는 각각의 멤버 타입은 앞에서 이미 배웠다.
+이 구조체는 XML 태그의 속성 값을 저장하는 용도로 사용되는데 속성 값은 children->content 필드에 저장된다.
+특별할 건 없고 래퍼 구조체 정도로 보면 된다.
+
+xmlNode->type 필드를 조사하고 이 값이 XML_ELEMENT_NODE일 때 xmlGetProp 함수를 호출하면 xmlNode->children 필드를 통해 속성 값을 조회할 수 있다.
+속성 값은 xmlAttr->children->content 필드에 저장되며 xmlNodeGetContent 함수를 호출하여 속성 값을 가져오는 것이다.
+즉, 속성을 다루고자 한다면 xmlAttr을 직접 사용하거나 xmlGetProp를 활용해야 한다.
+
+{
+	xmlChar *attrValue = xmlGetProp(node, (const xmlChar *)"id");
+	if (attrValue) {
+		printf("속성 값: %s\n", attrValue);
+		xmlFree(attrValue); // 메모리 해제
+	}
+}
+
+이번엔 속성 예시를 보자.
+{
+	<user id="123" name="Alice">
+		<location city="Seoul" country="Korea"/>
+	</user>
+}
+
+<user> 태그에는 "id", "name" 속성이 있으며 <location> 태그에는 "city", "country" 속성이 있다.
+xmlAttr->name으로 속성 이름을 가져오고 xmlAttr->children을 통해 속성 값을 확인할 수 있으며,
+속성이 여러 개일 경우 next, prev를 이용해 리스트 형태로 저장한다.
+
+이번엔 특정 노드를 찾는 함수를 알아보자.
+xmlStrcmp 함수를 이용해 특정 노드의 이름을 확인할 수 있다.
+예시를 보자.
+
+{
+	if(xmlStrcmp(node->name, (const xmlChar *)"body") == 0){
+		...
+	}
+}
+
+동작 자체는 strcmp와 똑같이 문자열을 비교하며, 동일한 값인지 확인할 때 주로 사용된다.
+<item>, <user>, <category> 등 태그를 탐색할 때 활용되는데 문자열이 char타입이 아닌 xmlChar 타입이라는 것만 다르다.
+
+별로 분석할게 없으므로 그냥 넘어가자.
+
+다음은 xmlNextElementSibling 함수인데 이 함수는 같은 레벨의 다음 XML 요소를 찾는 동작을 한다.
+현재 노드를 기준으로 같은 레벨에 있는 다음 태그를 찾는 함수이며 형제 노드를 순회할 때 유용하다.
+<item>, <category> 등 같은 태그가 연속적으로 존재할 때 활용된다.
+
+{
+	xmlNodePtr xmlNextElementSibling(xmlNodePtr node); // 현재 노드 (다음 형제 요소를 찾을 기준)
+}
+
+xmlNodePtr 타입을 반환하며 인수로는 형제 요소를 탐색할 기준 노드를 전달하면 된다.
+다음 형제 요소가 없으면 NULL을 반환한다.
+
+내부적으로 node->next 필드를 이용해 같은 레벨의 다음 노드로 이동한다.
+만약 다음 노드가 XML_ELEMENT_NODE 타입이면 해당 노드를 반환하며 텍스트 노드나 다른 유형의 노드는 건너뛴다.
+즉, XML_TEXT_NODE, XML_COMMENT_NODE 등이 있으면 건너뛰고 다음 노드를 탐색하며 XML_ELEMENT_NODE인 경우에만 반환된다.
+정리하면, XML 문서에서 같은 레벨의 태그를 순차적으로 탐색하기 위한 함수라고 보면 된다.
+사용 예시를 보자.
+
+{
+	int main() {
+		xmlDocPtr doc = xmlReadFile("data.xml", NULL, 0);
+		if (!doc) {
+			fprintf(stderr, "XML 파일을 불러올 수 없습니다!\n");
+			return 1;
+		}
+
+		xmlNodePtr root = xmlDocGetRootElement(doc);
+		xmlNodePtr node = root->children;
+
+		while (node) {
+			if (node->type == XML_ELEMENT_NODE) {
+				printf("현재 노드: %s\n", node->name);
+				node = xmlNextElementSibling(node); // 다음 형제 요소로 이동
+			} else {
+				node = node->next; // 다른 유형의 노드는 건너뛰고 이동
+			}
+		}
+
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+
+		return 0;
+	}
+}
+
+다음은 XML 문서에서 특정 태그를 찾아 이동하는 함수이다.
+xmlFirstElementChild 함수인데 이 함수는 현재 노드의 첫 번째 자식 요소를 가져온다.
+
+{
+	xmlNodePtr xmlFirstElementChild(xmlNodePtr node); // 부모 노드 (첫 번째 하위 요소를 찾을 기준)
+}
+
+xmlNodePtr 타입을 반환하는데 현재 노드 기준으로 첫 번째 XML 하위 요소를 찾아 반환한다.
+인수로는 자식 요소를 탐색할 부모 노드를 전달하면 되며 만약 첫 번째 하위 요소가 존재하지 않으면 NULL이 반환된다.
+
+내부적으로 node->children 필드를 이용해 첫 번째 자식 노드를 탐색하는데 하위 노드가 XML_ELEMENT_NODE이면 해당 노드를 반환하고
+그렇지 않으면 건너 뛴다. 이전 함수와 동일하게 XML_TEXT_NODE, XML_COMMENT_NODE 등 다른 유형은 무시한다.
+오직 XML_ELEMENT_NODE 타입일 때만 반환하며 첫 번째 하위 요소가 없거나 부모 노드가 <root></root>처럼 비어있는 경우 NULL이 반환된다.
+예시를 보자.
+
+{
+	int main() {
+		xmlDocPtr doc = xmlReadFile("data.xml", NULL, 0);
+		if (!doc) {
+			fprintf(stderr, "XML 파일을 불러올 수 없습니다!\n");
+			return 1;
+		}
+
+		xmlNodePtr root = xmlDocGetRootElement(doc);
+		xmlNodePtr firstChild = xmlFirstElementChild(root);
+
+		if (firstChild) {
+			printf("첫 번째 하위 노드: %s\n", firstChild->name);
+		} else {
+			printf("하위 요소가 없습니다.\n");
+		}
+
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+
+		return 0;
+	}
+}
+
+이번엔 특정 XML 노드가 지정된 속성을 가지는지 검사하는 함수에 대해 알아보자.
+xmlHasProp 함수인데 특정 속성이 존재하는지 확인하고 존재할 경우 속성 노드를 반환한다.
+원형은 다음과 같다.
+
+{
+	xmlAttrPtr xmlHasProp(
+		xmlNodePtr node, // 속성을 검사할 노드
+		const xmlChar *name // 확인할 속성 이름 (예: "id", "class")
+	);
+}
+
+앞에서 배운 xmlAttr 구조체의 포인터를 반환하는데 이 포인터가 속성 노드이다.
+인수로는 속성을 검사할 XML 노드와 확인할 속성 이름을 차례대로 전달한다.
+속성이 존재하지 않으면 NULL이 반환된다.
+
+내부적으로 node가 XML_ELEMENT_NODE 타입인지 확인하는데 이는 속성이 ELEMENT 노드에만 존재하기 떄문이다.
+만약 노드가 속성을 포함하지 않는 XML_TEXT_NODE라면 NULL을 반환한다.
+예시를 보자.
+
+{
+	int main() {
+		xmlDocPtr doc = xmlReadFile("data.xml", NULL, 0);
+		if (!doc) {
+			fprintf(stderr, "XML 파일을 불러올 수 없습니다!\n");
+			return 1;
+		}
+
+		xmlNodePtr root = xmlDocGetRootElement(doc);
+		xmlNodePtr node = root->children;
+
+		while (node) {
+			if (node->type == XML_ELEMENT_NODE) {
+				xmlAttrPtr attr = xmlHasProp(node, (const xmlChar *)"id");
+				if (attr) {
+					printf("노드: %s, 속성(id) 존재!\n", node->name);
+				} else {
+					printf("노드: %s, 속성(id) 없음.\n", node->name);
+				}
+			}
+			node = node->next;
+		}
+
+		xmlFreeDoc(doc);
+		xmlCleanupParser();
+
+		return 0;
+	}
+}
+
+이제 마지막으로 xmlFreeDoc 함수에 대해 알아보자.
+앞에서 XML 문서 객체를 생성했을 때 해제하는 함수라고 이미 언급한 적 있다.
+메모리를 정리하는 역할을 하는데 원형은 다음과 같다.
+
+{
+	void xmlFreeDoc(xmlDocPtr doc); // 해제할 XML 문서 객체
+}
+
+인수로 전달된 XML 문서 객체의 메모리를 안전하게 해제하며 문서의 모든 노드와 관련된 메모리를 정리해준다.
+이 과정에서 xmlDict와 xmlNS 관련 데이터도 해제하고 파싱에 사용된 추가적인 데이터도 해제한다.
+최종적으로 인수로 전달된 XML 문서 객체에 대한 포인터를 무효화시켜 알 수 없는 접근도 방지한다.
+사용 후 xmlCleanupParser 함수를 호출하면 libxml2의 내부 메모리도 정리된다.
+
+xmlCleanupParser 함수는 libxml2가 내부적으로 사용하는 전역 메모리를 정리하는데, 시스템 리소스를 해제하는 것이라 보면 된다.
+원형은 다음과 같다.
+
+{
+	void xmlCleanupParser(void); // libxml2 내부 메모리 정리
+}
+
+내부적으로 사용한 전역 메모리(캐시, 문자열 사전, 네임스페이스 등)를 해제하는 동작을 하므로 libxml2 라이브러리를 모두 사용했다면 반드시 호출해야 한다.
+
+여기까지 libxml2에 대해 간단히 정리해봤다.
+프로젝트 하나할 때마다 하루는 꼬박 써야 라이브러리를 모두 배울 수가 있다.
+
+널리 사용되고 있는 아주 잘만들어진 라이브러리이므로 이 정도 노력은 해야만 한다.
+이제 만드려고 했던 프로젝트를 시작해보자.
