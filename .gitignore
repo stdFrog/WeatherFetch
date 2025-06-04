@@ -6,6 +6,9 @@
 *.txt
 *.cmd
 *.bat
+*.xml
+*.json
+*.h
 !README.txt
 !main.cpp
 
