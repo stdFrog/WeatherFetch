@@ -1,0 +1,146 @@
+HTTP 헤더의 기본 구조를 알아야 페이지를 이루는 문서 정보를 가져올 수 있다.
+기본적으로 "키:값" 형태로 구성되는데 각 헤더 필드는 줄바꿈을 통해 구분된다.
+
+{
+	GET /index.html HTTP/1.1\r\n
+	Host: www.example.com\r\n
+	User-Agent: Mozilla/5.0\r\n
+	Accept: text/html\r\n
+	Connection: keep-alive\r\n
+	\r\n
+}
+
+첫 번째 줄부터 보자. 요청 메서드가 가장 먼저 온다.
+요청 메서드는 GET과 POST가 있는데 데이터를 가져올 때는 GET, 데이터를 전송할 때는 POST 메서드를 사용한다.
+메서드를 지정한 후 한 칸 뛰고 웹의 도메인 경로를 지정하는데 "/"가 웹사이트의 루트 디렉토리를 의미한다.
+즉, 기본 홈페이지를 요청하려면 "/"만 포함하고 위와 같이 특정 경로를 요청할 때는 "/index.html"과 같이 해당 경로를 추가로 붙여주면 된다.
+
+그 뒤에 오는 "HTTP/1.1"은 HTTP의 버전을 의미하며 가장 널리 사용되고 있는 버전이 1.1버전이다.
+여러 버전이 있는데 통상 1.1버전으로 요청하면 된다.
+
+그 다음 줄의 Host와 User-Agent, Accept, Connection 등은 각 헤더의 필드를 의미한다.
+반드시 포함해야 하는 필수적인 주요 헤더이며 이 네 가지는 기억해둬야 한다.
+
+- Host:			요청하는 서버의 도메인 또는 IP 주소(Host: example.com)
+- User-Agent:	클라이언트(웹 브라우저, API 요청 도구 등)의 정보를 담는다(Mozila/5.0)
+- Accept:		클라이언트가 받을 수 있는 데이터 타입을 지정한다(Accept: text/html, applicaion/json)
+- Connection:	연결 유지 여부(keep-alive 또는 close)
+
+이 외에도 자주 사용되는 헤더를 몇 가지 더 알아보자.
+- Referer:			현재 요청을 보낸 이전 페이지 URL(Referer: https://google.com)
+- Authorization:	인증 정보 포함(Authorization: Bearer <토큰>)
+- Cookie:			서버에서 받은 쿠키 데이터를 포함(Cookie: session_id=abcd1234)
+- Content-Type:		요청의 본문이 어떤 형식인지 지정(Content-Type: application/json)
+
+현재 프로젝트에서는 위 헤더들을 사용하지 않는다.
+직접 문서를 파싱하기 때문에 이런 정보들이 필요하지 않다.
+
+다음은 서버에서 클라이언트에게 보내는 헤더를 보자.
+HTTP 응답 헤더라고 하는데 주요 헤더는 다음과 같다.
+
+- Content-Type:		응답의 데이터 유형(text/html, application/json, image/png 등)
+- Content-Length:	응답 본문의 크기(바이트 단위)
+- Server:			웹 서버 소프트웨어 정보(Server: Apache/2.4.41)
+- Set-Cookie:		클라이언트에게 쿠키 저장 요청(Set-Cookie: session_id=abcd1234; Path=/; HttpOnly)
+
+예시를 보자.
+{
+	HTTP/1.1 200 OK\r\n
+	Content-Type: text/html\r\n
+	Content-Length: 1024\r\n
+	Server: Apache/2.4.41\r\n
+	Set-Cookie: session_id=abcd1234; Path=/; HttpOnly\r\n
+	\r\n
+}
+
+첫 줄부터 보자.
+"HTTP/1.1 200 OK"는 응답 상태 코드이며 사용된 HTTP 프로토콜 버전과 요청에 대한 처리가 어떻게 이뤄졌음을 의미하는 코드가 전달된다.
+"200 OK"는 정상적으로 처리되었음을 의미한다.
+그 다음 줄의 "Content-Type: text/html"은 서버가 보내는 데이터 형식을 나타내는데 text/html은 HTML 문서라는 의미이며,
+application/json은 JSON 데이터, image/png는 png 이미지가 전달된다는 뜻이다.
+그 다음 줄의 Content-Length: 1024는 서버가 클라이언트의 요청에 응답하여 데이터를 반환할 때 이 데이터의 전체 크기를 나타낸다.
+바이트 단위이므로 1kb 크기의 데이터가 반환된다고 보면 된다. 이 값이 없으면 사실상 클라이언트측에서 데이터를 얼마만큼 읽어야 하는지 판단하기 어렵다.
+아래 예시를 보자. Content-Length의 의미를 좀 더 정확히 이해하고 넘어가야 한다.
+
+{
+	HTTP/1.1 200 OK\r\n
+	Content-Type: text/html\r\n
+	Content-Length: 1024\r\n
+	Server: Apache/2.4.41\r\n
+	\r\n
+	<html>
+	<head><title>Example</title></head>
+	<body>Weather data goes here...</body>
+	</html>
+}
+
+Content-Length는 헤더 정보를 제외한 본문의 크기를 의미한다.
+Content-Length가 1024 바이트라는 것은 "\r\n\r\n" 뒤에 오는 <html>부터 </html>까지, 즉 문서 전체의 크기가 1kb라는 뜻이다.
+html 태그를 포함하는 크기이며 헤더 부분은 제외된다.
+
+일부 서버는 Content-Length가 없을 수 있는데, 이때는 "Transfer-Encoding: chunked"를 확인해야 한다.
+이는 곧, 데이터를 조각(chunk) 단위로 전송한다는 뜻이며 클라이언트가 Content-Length 없이 데이터를 수신하도록 만들어야 한다.
+
+그 다음 줄의 "Server: Apache/2.4.41"은 서버가 어떤 소프트웨어를 사용하는지 보여준다.
+보안상 이유로 이 정보를 감추는 경우가 많아 사실상 별 의미는 없다고 보면 된다.
+
+마지막으로 "Set-Cookie: session_id=abcd1234; Path=/; HttpOnly"는 서버가 클라이언트(브라우저)에 쿠키를 저장하라고 명령하는 것이다.
+- session_id=abcd1234 : 저장될 쿠키의 값을 의미한다. 즉, session_id라는 이름에 abcd1234값을 저장한다.
+- Path=/ :				쿠기가 적용될 경로이다. 이 구문의 의미는 곧, 사이트 전체 "/" 에서 사용 가능하다는 뜻이다.
+- HttpOnly:				브라우저의 javascript에서 접근할 수 없다는 뜻이다. 보안과 관련된 부분인데 말 그대로 http 문서의 데이터 정보만 줄 수 있다는 뜻이다.
+
+서버가 클라이언트에게 쿠키를 저장하라고 명령할 때 브라우저에서는 자동으로 쿠키를 저장한다.
+이후부터 동일한 웹사이트를 요청할 때 알아서 쿠키 정보를 포함하여 요청을 보낸다.
+
+반면, 우리가 만드는 프로그램에서는 아래와 같이 따로 저장하여 직접 헤더에 포함한 후 요청을 보내야 한다.
+
+> char cookie[] = "Cookie: session_id=abcd1234\r\n";
+
+여기서 쿠키란 웹 서버와 클라이언트 간의 상태 정보를 저장하고 관리하기 위해 사용되는 작은 데이터 파일을 말한다.
+쿠키의 역할과 필요성에 대해 알아보자.
+
+- 세션 유지:			로그인 상태를 유지하여 사용자가 페이지를 이동해도 로그인된 상태를 유지한다.
+- 사용자 맞춤 설정:		웹사이트가 사용자의 설정(예: 다크 모드 활성화, 언어 선택 등)을 기억하고 자동 적용할 수 있다.
+- 트래킹 및 분석:		사용자의 방문 기록을 저장하여 맞춤형 광고나 추천 서비스를 제공한다.
+- 보안 & 인증:			CSRF 보호나 사용자 인증을 위해 쿠키를 활용한다.
+
+이번엔 응용 프로그램에서 쿠키를 처리하는 방법에 대해 알아보자.
+서버에 문서를 요청하고 쿠키를 받았다고 가정하자.
+
+> char cookie[] = "session_id=abcd1234";
+
+위처럼 이 정보를 저장해두고 이후에 해당 페이지를 재요청하게 될 때 이 정보를 헤더에 포함한다.
+
+{
+	char request[] = "GET /weather/today HTTP/1.1\r\n"
+	"Host: weather.go.kr\r\n"
+	"Cookie: session_id=abcd1234\r\n"
+	"Connection: close\r\n\r\n";
+}
+
+이렇게 하면 서버가 쿠키 정보를 읽고 사용자를 식별하여 위에서 말한 서비스를 제공한다.
+몇 가지 주의할 점이 있는데 이는 다음과 같다.
+
+- 쿠키 만료 시간:	쿠키는 특정 시간이 지나면 자동으로 삭제된다.
+- 보안:				쿠키는 HTTPS와 함께 사용하여 데이터를 안전하게 보호해야 한다.
+- HttpOnly 속성:	대부분의 서버가 가지는 속성이며 크로스 사이트 스크립팅 공격을 방지하기 위해 Javasript 코드를 차단하는 것이다.
+					공격자(클라이언트)가 악성 코드를 이용해 쿠키 값을 탈취할 수 있는데 이를 막기 위함이라고 보면 된다.
+
+굳이 필요할까 싶지만 예시를 보자.
+서버가 아래와 같이 응답했을 때 클라이언트 측에서 Javascript를 이용해 접근하려고 해도 값을 읽을 수 없게끔 만드는 것이다.
+
+Server
+> Set-Cookie: session_id=abcd1234; Path=/; HttpOnly
+
+Client
+> console.log(document.cookie);			// session_id가 출력되지 않는다.
+
+브라우저에서 사용하는 스크립팅 언어이므로 알고있을 필요는 없다.
+다만, 굉장히 간단한 구문으로 쿠키 값을 탈취하여 사용자의 정보를 알아낼 수 있다는 점에서 꽤나 말썽을 일으켰던 코드이다.
+
+지금은 브라우저가 자동으로 해당 쿠키를 서버 요청 시 포함해준다.
+정리하면, HttpOnly 설정이 있는 경우 Javascript가 쿠키를 볼 수 없어 보안이 강화되고
+HttpOnly가 설정되지 않은 경우 Javascript에서 쿠키를 읽을 수 있어 보안에 취약점이 생긴다.
+
+여기까지, 현재 프로젝트에서 필요한 내용은 모두 다뤘다고 볼 수 있다.
+추가적인 정보는 프로젝트를 진행하면서 필요할 때마다 찾아보기로 한다.
