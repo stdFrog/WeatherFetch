@@ -14,6 +14,16 @@ struct CodeTable{
 	const char* Unit;
 };
 
+struct xmlMemory{
+	char* Text;
+	size_t Size;
+};
+
+struct jsonMemory{
+	char* Text;
+	size_t Size;
+};
+
 const struct CodeTable CategoryTable[] = {
 	{ "POP", "Probability of Precipitation", "(%)" },
 	{ "PTY", "Precipitation Type", "" }, 
@@ -30,65 +40,6 @@ const struct CodeTable CategoryTable[] = {
 	{ "VEC", "Wind Direction", "(deg)"},
 	{ "WSD", "Wind Speed", "(m/s)" }
 };
-
-struct xmlMemory{
-	char* Text;
-	size_t Size;
-};
-
-size_t KMAWriteCallback(void *pBuffer, size_t Size, size_t NumberOfMembers, void *pArgs) {
-	struct xmlMemory *pMem = (struct xmlMemory*)pArgs;
-
-	size_t TotalSize = Size * NumberOfMembers;
-	char *pTemp = (char*)realloc(pMem->Text, pMem->Size + TotalSize + 1/* '\0' */);
-
-	if(!pTemp){
-		fprintf(stderr, "Allocation Failed: %d\n", GetLastError());
-		return 0;
-	}
-
-	pMem->Text = pTemp;
-	memcpy(&(pMem->Text[pMem->Size]), pBuffer, TotalSize);
-	pMem->Size += TotalSize;
-	pMem->Text[pMem->Size] = '\0';
-
-	return TotalSize;
-}
-
-int CurrentTime(){
-	SYSTEMTIME st;
-	GetLocalTime(&st);
-	return st.wHour;
-}
-
-char* GetDate(){
-	char *buf = NULL;
-	SYSTEMTIME st;
-	GetLocalTime(&st);
-	buf = (char*)malloc(9);
-	sprintf(buf, "%04d%02d%02d", st.wYear, st.wMonth, st.wDay);
-	return buf;
-}
-
-int Aprx(int Time){
-	int t, c;
-
-	for(int i=0; i<sizeof(BASETIME_TABLE) / sizeof(BASETIME_TABLE[0]); i++){
-		t = BASETIME_TABLE[i] + 2;
-		c = Time;
-
-		if(t > 23){
-			t = 24 - t;
-			c = Time - 24;
-		}
-
-		if(t >= c){
-			return i;
-		}
-	}
-
-	return 2; /* default */
-}
 
 #define RadiusOfTheEarth	6371.00877			// 지도 반경 - 평균 반경 (km)
 #define GridSpacing			5.0					// 격자 간격 (km)
@@ -179,10 +130,53 @@ void LatLonToGrid(double Latitude, double Longitude, int *NX, int *NY){
 	*NY = (int)(ro - ra * cos(Theta) + GridOriginY + 0.5);
 }
 
-struct jsonMemory{
-	char* Text;
-	size_t Size;
-};
+int CurrentTime(){
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	return st.wHour;
+}
+
+char* GetDate(){
+	char *buf = NULL;
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	buf = (char*)malloc(9);
+	sprintf(buf, "%04d%02d%02d", st.wYear, st.wMonth, st.wDay);
+	return buf;
+}
+
+int Aprx(int Time){
+	int t, c;
+
+	for(int i=0; i<sizeof(BASETIME_TABLE) / sizeof(BASETIME_TABLE[0]); i++){
+		t = BASETIME_TABLE[i] + 2;
+		c = Time;
+
+		if(t > 23){
+			t = 24 - t;
+			c = Time - 24;
+		}
+
+		if(t >= c){
+			return i;
+		}
+	}
+
+	return 2; /* default */
+}
+
+
+int FindCity(char* Input, char **CityCode){
+	for(int i = 0; i<sizeof(CityList)/sizeof(CityList[0]); i++){
+		if(strcmp(CityList[i].Name, Input) == 0){
+			*CityCode = (char*)CityList[i].Code;
+			return 1;
+		}
+	}
+
+	printf("입력한 도시를 찾을 수 없습니다: %s\n현재는 서울/인천/경기 지역만 조회 가능합니다.\n", Input);
+	return 0;
+}
 
 size_t GEOWriteCallback(void *pBuffer, size_t Size, size_t NumberOfMembers, void *pArgs){
 	size_t TotalSize = Size * NumberOfMembers;
@@ -240,19 +234,8 @@ void GetLocationName(double Latitude, double Longitude, char* buf){
 		cJSON_Delete(Root);
 	}
 
+	free(Chunk.Text);
 	curl_easy_cleanup(Curl);
-}
-
-int FindCity(char* Input, char **CityCode){
-	for(int i = 0; i<sizeof(CityList)/sizeof(CityList[0]); i++){
-		if(strcmp(CityList[i].Name, Input) == 0){
-			*CityCode = (char*)CityList[i].Code;
-			return 1;
-		}
-	}
-
-	printf("입력한 도시를 찾을 수 없습니다: %s\n현재는 서울/인천/경기 지역만 조회 가능합니다.\n", Input);
-	return 0;
 }
 
 size_t KMAWriteCallbackFZ(void *pBuffer, size_t Size, size_t NumberOfMembers, void *pArgs){
@@ -339,7 +322,27 @@ void GetForecastZone(char* CityCode, double *Latitude, double *Longitude){
 		}
 	}
 
+	free(Chunk.Text);
 	curl_easy_cleanup(Curl);
+}
+
+size_t KMAWriteCallback(void *pBuffer, size_t Size, size_t NumberOfMembers, void *pArgs) {
+	struct xmlMemory *pMem = (struct xmlMemory*)pArgs;
+
+	size_t TotalSize = Size * NumberOfMembers;
+	char *pTemp = (char*)realloc(pMem->Text, pMem->Size + TotalSize + 1/* '\0' */);
+
+	if(!pTemp){
+		fprintf(stderr, "Allocation Failed: %d\n", GetLastError());
+		return 0;
+	}
+
+	pMem->Text = pTemp;
+	memcpy(&(pMem->Text[pMem->Size]), pBuffer, TotalSize);
+	pMem->Size += TotalSize;
+	pMem->Text[pMem->Size] = '\0';
+
+	return TotalSize;
 }
 
 int main(int argc, char *argv[]) {
