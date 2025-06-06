@@ -9,6 +9,7 @@
 *.xml
 *.json
 *.h
+*.pdf
 !README.txt
 !main.cpp
 !libcurl.txt
