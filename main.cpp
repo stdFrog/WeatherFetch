@@ -467,7 +467,6 @@ int main(int argc, char *argv[]) {
 									Data = Data->next;
 							}
 
-							static int flag = 0;
 							printf("----------------------\n");
 							printf("BaseDate: %s\n", BaseDate);
 							printf("BaseTime: %s\n", BaseTime);
