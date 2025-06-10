@@ -228,7 +228,7 @@ void GetLocationName(double Latitude, double Longitude, char* buf){
 			cJSON *FormattedAddress = cJSON_GetObjectItem(FirstResult, "formatted_address");
 
 			if(cJSON_IsString(FormattedAddress)){
-				sprintf(buf, "%s\n", FormattedAddress->valuestring);
+				sprintf(buf, "%s", FormattedAddress->valuestring);
 			}
 		}
 		cJSON_Delete(Root);
@@ -381,7 +381,7 @@ int main(int argc, char *argv[]) {
 
 	char URL[0x400];
 	char *Date = GetDate();
-	snprintf(URL, sizeof(URL), KMA_URL_WEATHER, KMA_API_KEY_WEATHER, NUMOFROWS2, PAGENO1, DATATYPE1, Date, BASETIME_TABLE[Aprx(CurrentTime())], MyPlaceX, MyPlaceY);
+	snprintf(URL, sizeof(URL), KMA_URL_WEATHER, KMA_API_KEY_WEATHER, NUMOFROWS1, PAGENO1, DATATYPE1, Date, BASETIME_TABLE[Aprx(CurrentTime())], MyPlaceX, MyPlaceY);
 	free(Date);
 
 	URL[strlen(URL)] = 0;
